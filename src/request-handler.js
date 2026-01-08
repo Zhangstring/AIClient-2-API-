@@ -1,5 +1,5 @@
 import deepmerge from 'deepmerge';
-import { handleError, isAuthorized } from './common.js';
+import { handleError, isAuthorized, API_ACTIONS } from './common.js';
 import { handleUIApiRequests, serveStaticFiles } from './ui-manager.js';
 import { handleAPIRequests } from './api-manager.js';
 import { getApiService, getProviderStatus } from './service-manager.js';
@@ -178,19 +178,37 @@ export function createRequestHandler(config, providerPoolManager) {
             path = normalizedPath;
         }
 
-        // 获取或选择 API Service 实例
-        let apiService;
-        try {
-            apiService = await getApiService(currentConfig);
-        } catch (error) {
-            handleError(res, { statusCode: 500, message: `Failed to get API service: ${error.message}` }, currentConfig.MODEL_PROVIDER);
-            const poolManager = getProviderPoolManager();
-            if (poolManager && currentConfig.uuid) {
-                poolManager.markProviderUnhealthy(currentConfig.MODEL_PROVIDER, {
-                    uuid: currentConfig.uuid
-                }, error.message);
+        const useProviderPool = Boolean(
+            providerPoolManager &&
+            currentConfig.providerPools &&
+            currentConfig.providerPools[currentConfig.MODEL_PROVIDER]
+        );
+        const geminiUrlPattern = new RegExp(`/v1beta/models/(.+?):(${API_ACTIONS.GENERATE_CONTENT}|${API_ACTIONS.STREAM_GENERATE_CONTENT})`);
+        const isContentGenerationEndpoint =
+            method === 'POST' &&
+            (
+                path === '/v1/chat/completions' ||
+                path === '/v1/responses' ||
+                path === '/v1/messages' ||
+                geminiUrlPattern.test(path)
+            );
+
+        // 获取或选择 API Service 实例（避免在号池内容请求时重复选取）
+        let apiService = null;
+        const shouldPreloadApiService = !useProviderPool || !isContentGenerationEndpoint;
+        if (shouldPreloadApiService) {
+            try {
+                apiService = await getApiService(currentConfig);
+            } catch (error) {
+                handleError(res, { statusCode: 500, message: `Failed to get API service: ${error.message}` }, currentConfig.MODEL_PROVIDER);
+                const poolManager = getProviderPoolManager();
+                if (poolManager && currentConfig.uuid) {
+                    poolManager.markProviderUnhealthy(currentConfig.MODEL_PROVIDER, {
+                        uuid: currentConfig.uuid
+                    }, error.message);
+                }
+                return;
             }
-            return;
         }
 
         // Handle count_tokens requests (Anthropic API compatible)
@@ -199,6 +217,9 @@ export function createRequestHandler(config, providerPoolManager) {
                 const body = await parseRequestBody(req);
                 console.log(`[Server] Handling count_tokens request for model: ${body.model}`);
 
+                if (!apiService) {
+                    apiService = await getApiService(currentConfig);
+                }
                 // Check if apiService has countTokens method
                 if (apiService && typeof apiService.countTokens === 'function') {
                     const result = apiService.countTokens(body);

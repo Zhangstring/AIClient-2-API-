@@ -14,14 +14,16 @@ let cachedModels = []; // 缓存模型列表
 /**
  * 显示提供商管理模态框
  * @param {Object} data - 提供商数据
+ * @param {Object} [options] - 可选参数
+ * @param {number} [options.initialPage=1] - 初始页码（用于刷新后保留页码）
  */
-function showProviderManagerModal(data) {
+function showProviderManagerModal(data, options = {}) {
     const { providerType, providers, totalCount, healthyCount } = data;
+    const { initialPage = 1 } = options;
     
     // 保存当前数据用于分页
     currentProviders = providers;
     currentProviderType = providerType;
-    currentPage = 1;
     cachedModels = [];
     
     // 移除已存在的模态框
@@ -35,6 +37,7 @@ function showProviderManagerModal(data) {
     }
     
     const totalPages = Math.ceil(providers.length / PROVIDERS_PER_PAGE);
+    currentPage = Math.max(1, Math.min(initialPage, Math.max(1, totalPages)));
     
     // 创建模态框
     const modal = document.createElement('div');
@@ -71,13 +74,13 @@ function showProviderManagerModal(data) {
                     </div>
                 </div>
                 
-                ${totalPages > 1 ? renderPagination(1, totalPages, providers.length) : ''}
+                ${totalPages > 1 ? renderPagination(currentPage, totalPages, providers.length) : ''}
                 
                 <div class="provider-list" id="providerList">
-                    ${renderProviderListPaginated(providers, 1)}
+                    ${renderProviderListPaginated(providers, currentPage)}
                 </div>
                 
-                ${totalPages > 1 ? renderPagination(1, totalPages, providers.length, 'bottom') : ''}
+                ${totalPages > 1 ? renderPagination(currentPage, totalPages, providers.length, 'bottom') : ''}
             </div>
         </div>
     `;
@@ -89,7 +92,9 @@ function showProviderManagerModal(data) {
     addModalEventListeners(modal);
     
     // 先获取该提供商类型的模型列表（只调用一次API）
-    const pageProviders = providers.slice(0, PROVIDERS_PER_PAGE);
+    const startIndex = (currentPage - 1) * PROVIDERS_PER_PAGE;
+    const endIndex = Math.min(startIndex + PROVIDERS_PER_PAGE, providers.length);
+    const pageProviders = providers.slice(startIndex, endIndex);
     loadModelsForProviderType(providerType, pageProviders);
 }
 
@@ -956,61 +961,13 @@ async function refreshProviderConfig(providerType) {
         // 如果当前显示的是该提供商类型的模态框，则更新模态框
         const modal = document.querySelector('.provider-modal');
         if (modal && modal.getAttribute('data-provider-type') === providerType) {
-            // 更新缓存的提供商数据
-            currentProviders = data.providers;
-            currentProviderType = providerType;
-            
-            // 更新统计信息
-            const totalCountElement = modal.querySelector('.provider-summary-item .value');
-            if (totalCountElement) {
-                totalCountElement.textContent = data.totalCount;
-            }
-            
-            const healthyCountElement = modal.querySelectorAll('.provider-summary-item .value')[1];
-            if (healthyCountElement) {
-                healthyCountElement.textContent = data.healthyCount;
-            }
-            
+            // 记录当前页码，在重建模态框时尽量保持用户所在页
+            const preservedPage = currentPage;
             const totalPages = Math.ceil(data.providers.length / PROVIDERS_PER_PAGE);
+            const safePage = totalPages > 0 ? Math.min(preservedPage, totalPages) : 1;
             
-            // 确保当前页不超过总页数
-            if (currentPage > totalPages) {
-                currentPage = Math.max(1, totalPages);
-            }
-            
-            // 重新渲染提供商列表（分页）
-            const providerList = modal.querySelector('.provider-list');
-            if (providerList) {
-                providerList.innerHTML = renderProviderListPaginated(data.providers, currentPage);
-            }
-            
-            // 更新分页控件
-            const paginationContainers = modal.querySelectorAll('.pagination-container');
-            if (totalPages > 1) {
-                paginationContainers.forEach(container => {
-                    const position = container.getAttribute('data-position');
-                    container.outerHTML = renderPagination(currentPage, totalPages, data.providers.length, position);
-                });
-                
-                // 如果之前没有分页控件，需要添加
-                if (paginationContainers.length === 0) {
-                    const modalBody = modal.querySelector('.provider-modal-body');
-                    const providerListEl = modal.querySelector('.provider-list');
-                    if (modalBody && providerListEl) {
-                        providerListEl.insertAdjacentHTML('beforebegin', renderPagination(currentPage, totalPages, data.providers.length, 'top'));
-                        providerListEl.insertAdjacentHTML('afterend', renderPagination(currentPage, totalPages, data.providers.length, 'bottom'));
-                    }
-                }
-            } else {
-                // 如果只有一页，移除分页控件
-                paginationContainers.forEach(container => container.remove());
-            }
-            
-            // 重新加载当前页的模型列表
-            const startIndex = (currentPage - 1) * PROVIDERS_PER_PAGE;
-            const endIndex = Math.min(startIndex + PROVIDERS_PER_PAGE, data.providers.length);
-            const pageProviders = data.providers.slice(startIndex, endIndex);
-            loadModelsForProviderType(providerType, pageProviders);
+            // 直接重建模态框，避免局部刷新导致的列表/分页状态不同步
+            showProviderManagerModal(data, { initialPage: safePage });
         }
         
         // 同时更新主界面的提供商统计数据

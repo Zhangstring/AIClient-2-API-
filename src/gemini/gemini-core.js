@@ -456,12 +456,10 @@ export class GeminiApiService {
                 return this.callApi(method, body, true, retryCount);
             }
 
-            // Handle 429 (Too Many Requests) with exponential backoff
-            if (status === 429 && retryCount < maxRetries) {
-                const delay = baseDelay * Math.pow(2, retryCount);
-                console.log(`[Gemini API] Received 429 (Too Many Requests). Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return this.callApi(method, body, isRetry, retryCount + 1);
+            // Handle 429 (Too Many Requests) - 直接抛出，让上层 handleContentGenerationRequest 处理换账号
+            if (status === 429) {
+                console.log(`[Gemini API] Received 429 (Too Many Requests). Throwing error for upper layer retry with account switching.`);
+                throw error;
             }
 
             // Handle other retryable errors (5xx server errors)
@@ -537,13 +535,10 @@ export class GeminiApiService {
                 return;
             }
 
-            // Handle 429 (Too Many Requests) with exponential backoff
-            if (status === 429 && retryCount < maxRetries) {
-                const delay = baseDelay * Math.pow(2, retryCount);
-                console.log(`[Gemini API] Received 429 (Too Many Requests) during stream. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                yield* this.streamApi(method, body, isRetry, retryCount + 1);
-                return;
+            // Handle 429 (Too Many Requests) - 直接抛出，让上层 handleContentGenerationRequest 处理换账号
+            if (status === 429) {
+                console.log(`[Gemini API] Received 429 (Too Many Requests) during stream. Throwing error for upper layer retry with account switching.`);
+                throw error;
             }
 
             // Handle other retryable errors (5xx server errors)

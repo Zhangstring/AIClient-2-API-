@@ -423,7 +423,7 @@ export class ProviderPoolManager {
 
     /**
      * 立即标记提供商为不健康（不等待 errorCount 达到阈值）
-     * 用于额度耗尽、429 等需要立即切换的场景
+     * 用于额度耗尽等需要立即切换的场景
      * @param {string} providerType - The type of the provider.
      * @param {object} providerConfig - The configuration of the provider to mark.
      * @param {string} [errorMessage] - Optional error message to store.

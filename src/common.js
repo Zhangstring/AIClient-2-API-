@@ -41,34 +41,54 @@ export function isRetryableNetworkError(error) {
 }
 
 /**
- * 识别需要立即标记不健康并换账户重试的错误
- * 包括：429 Rate Limit、额度耗尽、容量不足
+ * 识别 429 限流错误
+ * 429 只是临时限流，不代表额度耗尽，应该累计错误次数达到阈值才标记不健康
  * @param {Error} error - 错误对象
- * @returns {boolean} - 是否为需要换账户重试的错误
+ * @returns {boolean} - 是否为 429 限流错误
  */
-export function isCapacityExhaustedError(error) {
+export function isRateLimitError(error) {
+    if (!error) return false;
+    const statusCode = extractHttpStatusCode(error);
+    return statusCode === 429;
+}
+
+/**
+ * 识别真正的额度耗尽错误
+ * 这些错误需要立即标记账户不健康并换账户重试
+ * 注意：429 限流的消息可能包含 "no capacity available"，但不是真正的额度耗尽
+ * @param {Error} error - 错误对象
+ * @returns {boolean} - 是否为额度耗尽错误
+ */
+export function isQuotaExhaustedError(error) {
     if (!error) return false;
 
-    const message = (error.message || '').toLowerCase();
+    // 429 限流不算额度耗尽，即使消息包含 "no capacity available"
     const statusCode = extractHttpStatusCode(error);
-
-    // HTTP 429 Rate Limit
     if (statusCode === 429) {
-        return true;
+        return false;
     }
+
+    const message = (error.message || '').toLowerCase();
 
     // 额度耗尽相关消息
     const exhaustedPatterns = [
         'exhausted your capacity',
-        'no capacity available',
         'quota exceeded',
-        'rate limit exceeded',
-        'too many requests',
         'resource exhausted',
-        'rate_limit_error'
+        'billing_hard_limit_reached',
+        'insufficient_quota'
     ];
 
     return exhaustedPatterns.some(pattern => message.includes(pattern));
+}
+
+/**
+ * 识别需要换账户重试的错误（包括 429 限流和额度耗尽）
+ * @param {Error} error - 错误对象
+ * @returns {boolean} - 是否需要换账户重试
+ */
+export function isCapacityExhaustedError(error) {
+    return isRateLimitError(error) || isQuotaExhaustedError(error);
 }
 
 /**
@@ -627,18 +647,30 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
                 return;
             }
 
-            // 检查是否为需要换账户重试的错误（429、额度耗尽等）
+            // 检查是否为需要换账户重试的错误（429 限流、额度耗尽等）
             if (isCapacityExhaustedError(error) && providerPoolManager) {
                 retryCount++;
-                console.log(`[Retry] Capacity exhausted error detected, attempt ${retryCount}/${MAX_RETRY_COUNT}: ${error.message}`);
 
-                // 立即标记当前账户为不健康
-                if (actualUuid) {
-                    providerPoolManager.markProviderUnhealthyImmediately(
-                        toProvider,
-                        { uuid: actualUuid },
-                        error.message
-                    );
+                // 区分 429 限流和真正的额度耗尽
+                const is429RateLimit = isRateLimitError(error);
+                const isQuotaExhausted = isQuotaExhaustedError(error);
+
+                if (is429RateLimit) {
+                    console.log(`[Retry] 429 Rate Limit detected, attempt ${retryCount}/${MAX_RETRY_COUNT}: ${error.message}`);
+                    // 429 只是限流，累计错误次数，达到阈值才标记不健康
+                    if (actualUuid) {
+                        providerPoolManager.markProviderUnhealthy(toProvider, { uuid: actualUuid }, error.message);
+                    }
+                } else if (isQuotaExhausted) {
+                    console.log(`[Retry] Quota exhausted error detected, attempt ${retryCount}/${MAX_RETRY_COUNT}: ${error.message}`);
+                    // 真正的额度耗尽，立即标记不健康
+                    if (actualUuid) {
+                        providerPoolManager.markProviderUnhealthyImmediately(
+                            toProvider,
+                            { uuid: actualUuid },
+                            error.message
+                        );
+                    }
                 }
 
                 if (retryCount < MAX_RETRY_COUNT) {
